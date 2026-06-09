@@ -5,6 +5,8 @@ let currentUser = null;
 let currentView = 'dashboard-view';
 let departmentChart = null;
 let statusChart = null;
+let currentInventoryItems = [];
+let currentUsersList = [];
 
 // Inventory Table State
 let inventoryPage = 1;
@@ -492,6 +494,8 @@ async function loadInventoryTable() {
     
     loadingEl.classList.add('hidden');
     
+    currentInventoryItems = data.items;
+    
     if (data.items.length === 0) {
       emptyEl.classList.remove('hidden');
       updatePagination(0, 0, 0);
@@ -532,7 +536,7 @@ async function loadInventoryTable() {
         <td class="actions-col employee-only ${['admin', 'employee'].includes(currentUser.role) ? '' : 'hidden'}">
           <div class="action-btn-group">
             <button class="action-icon-btn edit-btn" onclick="openEditAssetModal(${item.id})" title="Edit Asset"><i class="fa-solid fa-pen"></i></button>
-            <button class="action-icon-btn delete-btn" onclick="openDeleteModal(${item.id}, '${item.article.replace(/'/g, "\\'")}', '${item.property_number}')" title="Delete Asset"><i class="fa-solid fa-trash"></i></button>
+            <button class="action-icon-btn delete-btn" onclick="openDeleteModal(${item.id})" title="Delete Asset"><i class="fa-solid fa-trash"></i></button>
           </div>
         </td>
       `;
@@ -737,10 +741,16 @@ async function handleAssetSubmit(e) {
 
 // Delete Asset Confirmation Modal
 let assetToDeleteId = null;
-function openDeleteModal(itemId, itemName, itemCode) {
+function openDeleteModal(itemId) {
   assetToDeleteId = itemId;
-  document.getElementById('delete-item-name').textContent = itemName;
-  document.getElementById('delete-item-code').textContent = itemCode;
+  const item = currentInventoryItems.find(i => i.id === itemId);
+  if (item) {
+    document.getElementById('delete-item-name').textContent = item.article;
+    document.getElementById('delete-item-code').textContent = item.property_number;
+  } else {
+    document.getElementById('delete-item-name').textContent = 'Asset Item';
+    document.getElementById('delete-item-code').textContent = 'CODE';
+  }
   document.getElementById('delete-error').classList.add('hidden');
   openModal('delete-modal');
 }
@@ -897,6 +907,8 @@ async function loadUsersTables() {
     pendingTbody.innerHTML = '';
     allTbody.innerHTML = '';
     
+    currentUsersList = data.users;
+    
     if (!data.users || data.users.length === 0) {
       pendingTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No pending accounts.</td></tr>';
       allTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No accounts found.</td></tr>';
@@ -919,7 +931,7 @@ async function loadUsersTables() {
           <td class="actions-col" style="text-align: center;">
             <div class="action-btn-group" style="justify-content: center;">
               <button class="btn btn-success btn-sm" onclick="approveUser(${user.id})" style="padding: 4px 10px; font-size: 11px;"><i class="fa-solid fa-check"></i> Approve</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteUser(${user.id}, '${user.username.replace(/'/g, "\\'")}')" style="padding: 4px 10px; font-size: 11px;"><i class="fa-solid fa-times"></i> Reject</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteUser(${user.id})" style="padding: 4px 10px; font-size: 11px;"><i class="fa-solid fa-times"></i> Reject</button>
             </div>
           </td>
         `;
@@ -950,7 +962,7 @@ async function loadUsersTables() {
         <td><span class="status-badge approved">Approved</span></td>
         <td class="actions-col" style="text-align: center;">
           ${isSelf ? '<span class="text-xs text-muted">Active Session</span>' : `
-            <button class="btn btn-outline btn-sm text-red" onclick="deleteUser(${user.id}, '${user.username.replace(/'/g, "\\'")}')" style="padding: 4px 10px; font-size: 11px; border-color: rgba(239, 68, 68, 0.2);"><i class="fa-solid fa-trash-can"></i> Delete</button>
+            <button class="btn btn-outline btn-sm text-red" onclick="deleteUser(${user.id})" style="padding: 4px 10px; font-size: 11px; border-color: rgba(239, 68, 68, 0.2);"><i class="fa-solid fa-trash-can"></i> Delete</button>
           `}
         </td>
       `;
@@ -981,7 +993,11 @@ async function approveUser(userId) {
   }
 }
 
-async function deleteUser(userId, username) {
+async function deleteUser(userId) {
+  const user = currentUsersList.find(u => u.id === userId);
+  if (!user) return;
+  const username = user.username;
+  
   if (!confirm(`Are you sure you want to delete or reject the user account '${username}'?`)) {
     return;
   }
