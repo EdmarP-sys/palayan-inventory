@@ -10,6 +10,66 @@ const { importExcel } = require('./importer');
 const app = express();
 const port = 3000;
 
+// LibSQL DB helpers mapping
+const dbAll = async (sql, params = []) => {
+  const res = await client.execute({ sql, args: params });
+  return res.rows;
+};
+
+const dbGet = async (sql, params = []) => {
+  const res = await client.execute({ sql, args: params });
+  return res.rows[0];
+};
+
+const dbRun = async (sql, params = []) => {
+  const res = await client.execute({ sql, args: params });
+  return { 
+    lastID: res.lastInsertRowid !== undefined ? Number(res.lastInsertRowid) : null, 
+    changes: res.rowsAffected 
+  };
+};
+
+// Custom LibSQL Session Store
+class LibSQLStore extends session.Store {
+  constructor(options) {
+    super(options);
+  }
+  
+  async get(sid, callback) {
+    try {
+      const row = await dbGet("SELECT sess FROM sessions WHERE sid = ? AND expire > ?", [sid, Math.floor(Date.now() / 1000)]);
+      if (!row) return callback(null, null);
+      callback(null, JSON.parse(row.sess));
+    } catch (err) {
+      callback(err);
+    }
+  }
+  
+  async set(sid, sessionData, callback) {
+    try {
+      const maxAge = sessionData.cookie && sessionData.cookie.maxAge ? sessionData.cookie.maxAge : 1000 * 60 * 60 * 24 * 2;
+      const expire = Math.floor((Date.now() + maxAge) / 1000);
+      const sessStr = JSON.stringify(sessionData);
+      await dbRun(
+        "INSERT INTO sessions (sid, sess, expire) VALUES (?, ?, ?) ON CONFLICT(sid) DO UPDATE SET sess = excluded.sess, expire = excluded.expire",
+        [sid, sessStr, expire]
+      );
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
+  
+  async destroy(sid, callback) {
+    try {
+      await dbRun("DELETE FROM sessions WHERE sid = ?", [sid]);
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
+}
+
 // Setup directories
 const uploadDir = process.env.VERCEL ? '/tmp' : path.join(__dirname, 'uploads');
 if (!process.env.VERCEL && !fs.existsSync(uploadDir)) {
@@ -32,13 +92,16 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Configure session
+// Configure session using database store
 app.use(session({
+  store: new LibSQLStore(),
   secret: 'palayan-city-secret-key-2025',
   resave: false,
   saveUninitialized: false,
   cookie: {
-    maxAge: 1000 * 60 * 60 * 24 // 24 hours
+    maxAge: 1000 * 60 * 60 * 24 * 2, // 2 days (48 hours)
+    httpOnly: true,
+    sameSite: 'lax'
   }
 }));
 
@@ -61,24 +124,7 @@ app.use((req, res, next) => {
   }
 });
 
-// LibSQL DB helpers mapping
-const dbAll = async (sql, params = []) => {
-  const res = await client.execute({ sql, args: params });
-  return res.rows;
-};
-
-const dbGet = async (sql, params = []) => {
-  const res = await client.execute({ sql, args: params });
-  return res.rows[0];
-};
-
-const dbRun = async (sql, params = []) => {
-  const res = await client.execute({ sql, args: params });
-  return { 
-    lastID: res.lastInsertRowid !== undefined ? Number(res.lastInsertRowid) : null, 
-    changes: res.rowsAffected 
-  };
-};
+// Database helpers declared at top of file
 
 // Middleware to protect routes and verify login
 const requireLogin = (req, res, next) => {

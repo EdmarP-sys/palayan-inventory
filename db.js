@@ -82,6 +82,15 @@ async function initDb() {
     )
   `);
 
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      sess TEXT,
+      expire INTEGER
+    )
+  `);
+  await client.execute(`CREATE INDEX IF NOT EXISTS idx_sessions_expire ON sessions(expire)`);
+
   // Seed default users if they don't exist
   const checkRes = await client.execute("SELECT count(*) as count FROM users");
   const count = checkRes.rows[0].count;
