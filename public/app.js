@@ -42,17 +42,6 @@ function setupEventListeners() {
   // Login Form
   document.getElementById('login-form').addEventListener('submit', handleLogin);
   
-  // Demo Login Buttons
-  document.querySelectorAll('.demo-login-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const u = e.currentTarget.getAttribute('data-user');
-      const p = e.currentTarget.getAttribute('data-pass');
-      document.getElementById('login-username').value = u;
-      document.getElementById('login-password').value = p;
-      document.getElementById('login-form').dispatchEvent(new Event('submit'));
-    });
-  });
-  
   // Logout Button
   document.getElementById('logout-btn').addEventListener('click', handleLogout);
   
