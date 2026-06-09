@@ -11,8 +11,8 @@ const app = express();
 const port = 3000;
 
 // Setup directories
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
+const uploadDir = process.env.VERCEL ? '/tmp' : path.join(__dirname, 'uploads');
+if (!process.env.VERCEL && !fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
 }
 
