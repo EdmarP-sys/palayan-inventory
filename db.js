@@ -7,7 +7,22 @@ const client = createClient({
 });
 
 function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, storedPassword) {
+  if (!storedPassword) return false;
+  const parts = storedPassword.split(':');
+  if (parts.length !== 2) {
+    // Fallback to legacy SHA-256 for backward compatibility with initial seeds
+    const oldHash = crypto.createHash('sha256').update(password).digest('hex');
+    return oldHash === storedPassword;
+  }
+  const [salt, originalHash] = parts;
+  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+  return hash === originalHash;
 }
 
 async function initDb() {
@@ -41,9 +56,21 @@ async function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE,
       password_hash TEXT,
-      role TEXT
+      role TEXT,
+      status TEXT DEFAULT 'approved'
     )
   `);
+
+  // Migration for existing tables: add status column if it doesn't exist
+  try {
+    await client.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'approved'");
+    console.log("Migration: Added status column to users table.");
+  } catch (err) {
+    // Ignore duplicate column name error
+    if (!err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
+      console.log("Migration note (status column):", err.message);
+    }
+  }
 
   await client.execute(`
     CREATE TABLE IF NOT EXISTS audit_logs (
@@ -61,13 +88,13 @@ async function initDb() {
   
   if (count === 0) {
     const usersToSeed = [
-      { username: 'admin', password: 'adminpassword', role: 'admin' },
-      { username: 'employee', password: 'employeepassword', role: 'employee' }
+      { username: 'admin', password: 'adminpassword', role: 'admin', status: 'approved' },
+      { username: 'employee', password: 'employeepassword', role: 'employee', status: 'approved' }
     ];
     
     const seedQueries = usersToSeed.map(user => ({
-      sql: "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-      args: [user.username, hashPassword(user.password), user.role]
+      sql: "INSERT INTO users (username, password_hash, role, status) VALUES (?, ?, ?, ?)",
+      args: [user.username, hashPassword(user.password), user.role, user.status]
     }));
     
     await client.batch(seedQueries, 'write');
@@ -80,5 +107,6 @@ async function initDb() {
 module.exports = {
   client,
   initDb,
-  hashPassword
+  hashPassword,
+  verifyPassword
 };

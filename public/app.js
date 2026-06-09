@@ -164,6 +164,26 @@ function setupEventListeners() {
   });
   
   document.getElementById('import-form').addEventListener('submit', handleExcelImport);
+  
+  // Register toggling
+  document.getElementById('to-register-btn').addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('login-form').classList.add('hidden');
+    document.getElementById('register-form').classList.remove('hidden');
+    document.getElementById('register-error').classList.add('hidden');
+    document.getElementById('register-success').classList.add('hidden');
+    document.getElementById('register-form').reset();
+  });
+  
+  document.getElementById('to-login-btn').addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('register-form').classList.add('hidden');
+    document.getElementById('login-form').classList.remove('hidden');
+    document.getElementById('login-error').classList.add('hidden');
+    document.getElementById('login-form').reset();
+  });
+
+  document.getElementById('register-form').addEventListener('submit', handleRegister);
 }
 
 // ================= ROUTING & VISIBILITY =================
@@ -172,6 +192,8 @@ function showLoginScreen() {
   document.getElementById('login-container').classList.remove('hidden');
   document.getElementById('app-container').classList.add('hidden');
   document.getElementById('login-password').value = '';
+  document.getElementById('login-form').classList.remove('hidden');
+  document.getElementById('register-form').classList.add('hidden');
 }
 
 function loginSuccess(user) {
@@ -247,6 +269,10 @@ function switchView(viewId) {
     title.textContent = 'System Audits';
     subtitle.textContent = 'Track and review property manipulations and administrative actions.';
     loadAuditLogsTable();
+  } else if (viewId === 'users-view') {
+    title.textContent = 'User Accounts';
+    subtitle.textContent = 'Manage active logins and pending registration approvals.';
+    loadUsersTables();
   }
 }
 
@@ -808,3 +834,193 @@ function formatCurrency(value) {
 // Global functions for inline click triggers
 window.openEditAssetModal = openEditAssetModal;
 window.openDeleteModal = openDeleteModal;
+
+async function handleRegister(e) {
+  e.preventDefault();
+  const username = document.getElementById('register-username').value.trim();
+  const password = document.getElementById('register-password').value;
+  const confirm = document.getElementById('register-confirm').value;
+  
+  const errorEl = document.getElementById('register-error');
+  const successEl = document.getElementById('register-success');
+  
+  errorEl.classList.add('hidden');
+  successEl.classList.add('hidden');
+  
+  if (password !== confirm) {
+    errorEl.textContent = 'Passwords do not match.';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+  
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    
+    const data = await res.json();
+    if (res.ok) {
+      successEl.textContent = data.message || 'Registration submitted. Please wait for admin approval.';
+      successEl.classList.remove('hidden');
+      document.getElementById('register-form').reset();
+      
+      // Auto toggle to login after 3.5 seconds
+      setTimeout(() => {
+        document.getElementById('register-form').classList.add('hidden');
+        document.getElementById('login-form').classList.remove('hidden');
+        document.getElementById('login-username').value = username;
+      }, 3500);
+    } else {
+      errorEl.textContent = data.error || 'Registration failed.';
+      errorEl.classList.remove('hidden');
+    }
+  } catch (err) {
+    errorEl.textContent = 'Connection error.';
+    errorEl.classList.remove('hidden');
+    console.error(err);
+  }
+}
+
+async function loadUsersTables() {
+  const pendingTbody = document.getElementById('pending-users-tbody');
+  const allTbody = document.getElementById('all-users-tbody');
+  
+  pendingTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Loading pending requests...</td></tr>';
+  allTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Loading registered accounts...</td></tr>';
+  
+  try {
+    const res = await fetch('/api/admin/users');
+    const data = await res.json();
+    
+    pendingTbody.innerHTML = '';
+    allTbody.innerHTML = '';
+    
+    if (!data.users || data.users.length === 0) {
+      pendingTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No pending accounts.</td></tr>';
+      allTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No accounts found.</td></tr>';
+      return;
+    }
+    
+    const pendingUsers = data.users.filter(u => u.status === 'pending');
+    const activeUsers = data.users.filter(u => u.status === 'approved');
+    
+    // Render Pending
+    if (pendingUsers.length === 0) {
+      pendingTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 20px; color: var(--text-muted); font-style: italic;">No pending registration requests.</td></tr>';
+    } else {
+      pendingUsers.forEach(user => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${user.username}</strong></td>
+          <td><span class="role-badge employee">Employee</span></td>
+          <td><span class="status-badge pending">Pending Approval</span></td>
+          <td class="actions-col" style="text-align: center;">
+            <div class="action-btn-group" style="justify-content: center;">
+              <button class="btn btn-success btn-sm" onclick="approveUser(${user.id})" style="padding: 4px 10px; font-size: 11px;"><i class="fa-solid fa-check"></i> Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteUser(${user.id}, '${user.username.replace(/'/g, "\\'")}')" style="padding: 4px 10px; font-size: 11px;"><i class="fa-solid fa-times"></i> Reject</button>
+            </div>
+          </td>
+        `;
+        pendingTbody.appendChild(tr);
+      });
+    }
+    
+    // Render Approved/Active
+    activeUsers.forEach(user => {
+      const tr = document.createElement('tr');
+      const isSelf = user.username === currentUser.username;
+      
+      let roleSelect = '';
+      if (isSelf) {
+        roleSelect = `<span class="role-badge admin" style="text-transform: uppercase;">Admin (Self)</span>`;
+      } else {
+        roleSelect = `
+          <select onchange="changeUserRole(${user.id}, this.value)" style="padding: 4px 8px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border-color); outline: none;">
+            <option value="employee" ${user.role === 'employee' ? 'selected' : ''}>Employee</option>
+            <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option>
+          </select>
+        `;
+      }
+      
+      tr.innerHTML = `
+        <td><strong>${user.username}</strong></td>
+        <td>${roleSelect}</td>
+        <td><span class="status-badge approved">Approved</span></td>
+        <td class="actions-col" style="text-align: center;">
+          ${isSelf ? '<span class="text-xs text-muted">Active Session</span>' : `
+            <button class="btn btn-outline btn-sm text-red" onclick="deleteUser(${user.id}, '${user.username.replace(/'/g, "\\'")}')" style="padding: 4px 10px; font-size: 11px; border-color: rgba(239, 68, 68, 0.2);"><i class="fa-solid fa-trash-can"></i> Delete</button>
+          `}
+        </td>
+      `;
+      allTbody.appendChild(tr);
+    });
+    
+  } catch (err) {
+    pendingTbody.innerHTML = '<tr><td colspan="4" class="text-center text-red">Failed to load users.</td></tr>';
+    allTbody.innerHTML = '<tr><td colspan="4" class="text-center text-red">Failed to load users.</td></tr>';
+    console.error('Failed to load users list:', err);
+  }
+}
+
+async function approveUser(userId) {
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/approve`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+    if (res.ok) {
+      loadUsersTables();
+    } else {
+      alert(data.error || 'Failed to approve user.');
+    }
+  } catch (err) {
+    alert('Server connection error.');
+    console.error(err);
+  }
+}
+
+async function deleteUser(userId, username) {
+  if (!confirm(`Are you sure you want to delete or reject the user account '${username}'?`)) {
+    return;
+  }
+  
+  try {
+    const res = await fetch(`/api/admin/users/${userId}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (res.ok) {
+      loadUsersTables();
+    } else {
+      alert(data.error || 'Failed to delete user.');
+    }
+  } catch (err) {
+    alert('Server connection error.');
+    console.error(err);
+  }
+}
+
+async function changeUserRole(userId, newRole) {
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/role`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: newRole })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || 'Failed to change role.');
+      loadUsersTables();
+    }
+  } catch (err) {
+    alert('Server connection error.');
+    console.error(err);
+    loadUsersTables();
+  }
+}
+
+window.approveUser = approveUser;
+window.deleteUser = deleteUser;
+window.changeUserRole = changeUserRole;

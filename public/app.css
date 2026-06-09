@@ -1119,3 +1119,50 @@ a {
     grid-template-columns: 1fr;
   }
 }
+
+/* ================= AUTH TOGGLE & REGISTRATION HELPERS ================= */
+.auth-toggle {
+  text-align: center;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.auth-toggle a {
+  color: var(--color-primary);
+  font-weight: 500;
+  text-decoration: underline;
+  transition: color 0.15s ease;
+}
+
+.auth-toggle a:hover {
+  color: var(--color-primary-hover);
+}
+
+.form-help {
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.mb-2 {
+  margin-bottom: 24px !important;
+}
+
+/* Status Badges for User Management */
+.status-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.status-badge.approved {
+  background-color: var(--color-success-light);
+  color: var(--color-success);
+}
+
+.status-badge.pending {
+  background-color: var(--color-warning-light);
+  color: var(--color-warning-hover);
+}

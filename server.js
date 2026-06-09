@@ -4,7 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const xlsx = require('xlsx');
-const { client, hashPassword, initDb } = require('./db');
+const { client, hashPassword, verifyPassword, initDb } = require('./db');
 const { importExcel } = require('./importer');
 
 const app = express();
@@ -96,7 +96,7 @@ async function logAction(username, action, details) {
   }
 }
 
-// ================= AUTHENTICATION ENDPOINTS =================
+// ================= AUTHENTICATION & USER MANAGEMENT ENDPOINTS =================
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
@@ -110,8 +110,13 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
     
-    const hashed = hashPassword(password);
-    if (user.password_hash !== hashed) {
+    // Check if user status is pending
+    if (user.status === 'pending') {
+      return res.status(403).json({ error: 'Your account is pending approval by an administrator.' });
+    }
+    
+    // Check password using pbkdf2 verifier
+    if (!verifyPassword(password, user.password_hash)) {
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
     
@@ -121,6 +126,48 @@ app.post('/api/login', async (req, res) => {
     };
     
     res.json({ message: 'Login successful.', user: req.session.user });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/register', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required.' });
+  }
+  
+  const trimmedUser = username.trim();
+  const trimmedPass = password.trim();
+  
+  // Validation checks:
+  // 1. Username alphanumeric, underscores, hyphens, 3 to 30 chars
+  const usernameRegex = /^[a-zA-Z0-9_-]{3,30}$/;
+  if (!usernameRegex.test(trimmedUser)) {
+    return res.status(400).json({ error: 'Username must be 3-30 characters long and contain only letters, numbers, underscores, or hyphens.' });
+  }
+  
+  // 2. Password minimum 8 characters
+  if (trimmedPass.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+  }
+  
+  try {
+    // Check if username is taken (case-insensitive)
+    const existing = await dbGet("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", [trimmedUser]);
+    if (existing) {
+      return res.status(400).json({ error: 'Username is already taken.' });
+    }
+    
+    // Insert pending employee account
+    const pHash = hashPassword(trimmedPass);
+    const sql = "INSERT INTO users (username, password_hash, role, status) VALUES (?, ?, 'employee', 'pending')";
+    await dbRun(sql, [trimmedUser, pHash]);
+    
+    // Log the registration attempt
+    await logAction('system', 'REGISTER', `New user registration request: '${trimmedUser}' (pending approval)`);
+    
+    res.status(201).json({ message: 'Registration submitted successfully. Please wait for an administrator to approve your account.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -140,6 +187,103 @@ app.get('/api/me', (req, res) => {
     res.json({ user: req.session.user });
   } else {
     res.json({ user: null });
+  }
+});
+
+// GET ALL USERS (admin only)
+app.get('/api/admin/users', requireRole(['admin']), async (req, res) => {
+  try {
+    const users = await dbAll("SELECT id, username, role, status FROM users ORDER BY username ASC");
+    res.json({ users });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// APPROVE USER (admin only)
+app.post('/api/admin/users/:id/approve', requireRole(['admin']), async (req, res) => {
+  const targetId = req.params.id;
+  
+  try {
+    const user = await dbGet("SELECT * FROM users WHERE id = ?", [targetId]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    
+    await dbRun("UPDATE users SET status = 'approved' WHERE id = ?", [targetId]);
+    
+    await logAction(
+      req.session.user.username,
+      'APPROVE_USER',
+      `Approved user account: '${user.username}' (ID: ${targetId})`
+    );
+    
+    res.json({ message: `User '${user.username}' approved successfully.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE/REJECT USER (admin only)
+app.delete('/api/admin/users/:id', requireRole(['admin']), async (req, res) => {
+  const targetId = req.params.id;
+  
+  try {
+    const user = await dbGet("SELECT * FROM users WHERE id = ?", [targetId]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    
+    // Prevent admin from deleting themselves
+    if (user.username === req.session.user.username) {
+      return res.status(400).json({ error: 'You cannot delete your own account.' });
+    }
+    
+    await dbRun("DELETE FROM users WHERE id = ?", [targetId]);
+    
+    await logAction(
+      req.session.user.username,
+      'DELETE_USER',
+      `Deleted/Rejected user account: '${user.username}' (ID: ${targetId})`
+    );
+    
+    res.json({ message: `User '${user.username}' deleted/rejected successfully.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// UPDATE USER ROLE (admin only)
+app.post('/api/admin/users/:id/role', requireRole(['admin']), async (req, res) => {
+  const targetId = req.params.id;
+  const { role } = req.body;
+  
+  if (!role || !['employee', 'admin'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role. Must be employee or admin.' });
+  }
+  
+  try {
+    const user = await dbGet("SELECT * FROM users WHERE id = ?", [targetId]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    
+    // Prevent admin from demoting themselves
+    if (user.username === req.session.user.username && role !== 'admin') {
+      return res.status(400).json({ error: 'You cannot demote yourself from the admin role.' });
+    }
+    
+    await dbRun("UPDATE users SET role = ? WHERE id = ?", [role, targetId]);
+    
+    await logAction(
+      req.session.user.username,
+      'UPDATE_USER_ROLE',
+      `Updated role of '${user.username}' to '${role}'`
+    );
+    
+    res.json({ message: `User '${user.username}' role updated to '${role}'.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -138,10 +138,84 @@ async function runTests() {
     console.log(`✓ Admin fetched audit logs. Found ${r14.data.logs.length} entries.`);
     console.log('Latest action:', r14.data.logs[0].action, '-', r14.data.logs[0].details);
     
+    // 5. Test Registration & Admin Approval
+    console.log('\nTesting Public Registration & Admin Approval...');
+    const testUsername = 'test_reg_' + Date.now();
+    const testPassword = 'securepassword123';
+    
+    // 5.1 Register a new employee account
+    const rReg = await makeRequest('/api/register', {
+      method: 'POST',
+      body: { username: testUsername, password: testPassword }
+    });
+    assert.strictEqual(rReg.status, 201);
+    console.log(`✓ Registration request for ${testUsername} succeeded.`);
+    
+    // 5.2 Attempt to login as pending employee (should fail with 403)
+    const rLogPending = await makeRequest('/api/login', {
+      method: 'POST',
+      body: { username: testUsername, password: testPassword }
+    });
+    assert.strictEqual(rLogPending.status, 403);
+    assert.ok(rLogPending.data.error.includes('pending approval'));
+    console.log('✓ Pending user login attempt rejected with 403.');
+    
+    // 5.3 Login as Admin to approve
+    const rAdminLog = await makeRequest('/api/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'adminpassword' }
+    });
+    assert.strictEqual(rAdminLog.status, 200);
+    
+    // 5.4 Fetch users list as admin
+    const rUsersList = await makeRequest('/api/admin/users');
+    assert.strictEqual(rUsersList.status, 200);
+    const targetUser = rUsersList.data.users.find(u => u.username === testUsername);
+    assert.ok(targetUser);
+    assert.strictEqual(targetUser.status, 'pending');
+    console.log('✓ Admin retrieved user list and confirmed target user is pending.');
+    
+    // 5.5 Approve the user
+    const rApprove = await makeRequest(`/api/admin/users/${targetUser.id}/approve`, {
+      method: 'POST'
+    });
+    assert.strictEqual(rApprove.status, 200);
+    console.log(`✓ Admin approved user ${testUsername}.`);
+    
+    // 5.6 Log out admin
+    await makeRequest('/api/logout', { method: 'POST' });
+    sessionCookie = null;
+    
+    // 5.7 Login as now-approved user (should succeed)
+    const rLogApproved = await makeRequest('/api/login', {
+      method: 'POST',
+      body: { username: testUsername, password: testPassword }
+    });
+    assert.strictEqual(rLogApproved.status, 200);
+    assert.strictEqual(rLogApproved.data.user.role, 'employee');
+    console.log(`✓ User ${testUsername} successfully logged in after approval.`);
+    
+    // 5.8 Log out user
+    await makeRequest('/api/logout', { method: 'POST' });
+    sessionCookie = null;
+    
+    // 5.9 Login as Admin to delete user
+    await makeRequest('/api/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'adminpassword' }
+    });
+    
+    // 5.10 Delete the user
+    const rDeleteUser = await makeRequest(`/api/admin/users/${targetUser.id}`, {
+      method: 'DELETE'
+    });
+    assert.strictEqual(rDeleteUser.status, 200);
+    console.log(`✓ Admin deleted/rejected user ${testUsername}.`);
+    
     console.log('\n=== ALL ENDPOINT ROLE TESTS PASSED ===');
     process.exit(0);
   } catch (err) {
-    console.error('\n❌ Test Assert Failed:', err.message);
+    console.error('\n❌ Test Assert Failed:', err.stack || err.message);
     process.exit(1);
   }
 }
