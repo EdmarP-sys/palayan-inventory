@@ -42,6 +42,25 @@ app.use(session({
   }
 }));
 
+// Lazy database initialization middleware for serverless/Vercel
+let dbInitPromise = null;
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    if (!dbInitPromise) {
+      dbInitPromise = initDb().then(() => {
+        console.log('Database schema successfully initialized/migrated.');
+      }).catch(err => {
+        console.error('Database initialization failed:', err);
+        dbInitPromise = null; // Reset to retry on next request
+        next(err);
+      });
+    }
+    dbInitPromise.then(() => next()).catch(next);
+  } else {
+    next();
+  }
+});
+
 // LibSQL DB helpers mapping
 const dbAll = async (sql, params = []) => {
   const res = await client.execute({ sql, args: params });
