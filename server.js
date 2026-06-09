@@ -34,7 +34,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Configure session
 app.use(session({
-  secret: 'municipal-secret-key-2025',
+  secret: 'palayan-city-secret-key-2025',
   resave: false,
   saveUninitialized: false,
   cookie: {

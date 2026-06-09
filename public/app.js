@@ -258,7 +258,7 @@ function switchView(viewId) {
   
   if (viewId === 'dashboard-view') {
     title.textContent = 'Dashboard';
-    subtitle.textContent = 'Summary and analytics of municipal property.';
+    subtitle.textContent = 'Summary and analytics of Palayan City assets.';
     loadDashboardData();
   } else if (viewId === 'inventory-view') {
     title.textContent = 'Assets Directory';

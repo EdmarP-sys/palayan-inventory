@@ -1,7 +1,7 @@
 {
-  "name": "municipal-inventory-system",
+  "name": "palayan-city-inventory-system",
   "version": "1.0.0",
-  "description": "Premium Municipal Inventory CRUD & Dashboard System",
+  "description": "Premium Palayan City Inventory CRUD & Dashboard System",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
