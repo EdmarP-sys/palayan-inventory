@@ -21,6 +21,7 @@ let departmentsList = [];
 document.addEventListener('DOMContentLoaded', () => {
   checkSession();
   setupEventListeners();
+  lucide.createIcons();
 });
 
 // Check if user has active session
@@ -101,10 +102,11 @@ function setupEventListeners() {
       
       // Update icons
       document.querySelectorAll('.data-table th.sortable i').forEach(icon => {
-        icon.className = 'fa-solid fa-sort';
+        icon.setAttribute('data-lucide', 'arrow-up-down');
       });
       const icon = e.currentTarget.querySelector('i');
-      icon.className = inventorySortOrder === 'ASC' ? 'fa-solid fa-sort-up' : 'fa-solid fa-sort-down';
+      icon.setAttribute('data-lucide', inventorySortOrder === 'ASC' ? 'arrow-up' : 'arrow-down');
+      lucide.createIcons();
       
       loadInventoryTable();
     });
@@ -276,6 +278,7 @@ function switchView(viewId) {
     subtitle.textContent = 'Manage active logins and pending registration approvals.';
     loadUsersTables();
   }
+  lucide.createIcons();
 }
 
 
@@ -535,14 +538,16 @@ async function loadInventoryTable() {
         <td><span class="status-tag ${statusClass}">${item.status}</span></td>
         <td class="actions-col employee-only ${['admin', 'employee'].includes(currentUser.role) ? '' : 'hidden'}">
           <div class="action-btn-group">
-            <button class="action-icon-btn edit-btn" onclick="openEditAssetModal(${item.id})" title="Edit Asset"><i class="fa-solid fa-pen"></i></button>
-            <button class="action-icon-btn delete-btn" onclick="openDeleteModal(${item.id})" title="Delete Asset"><i class="fa-solid fa-trash"></i></button>
+            <button class="action-icon-btn edit-btn" onclick="openEditAssetModal(${item.id})" title="Edit Asset"><i data-lucide="pencil"></i></button>
+            <button class="action-icon-btn delete-btn" onclick="openDeleteModal(${item.id})" title="Delete Asset"><i data-lucide="trash-2"></i></button>
           </div>
         </td>
       `;
       
       tableTbody.appendChild(tr);
     });
+    
+    lucide.createIcons();
     
     const pagStart = (data.pagination.page - 1) * data.pagination.limit + 1;
     const pagEnd = pagStart + data.items.length - 1;
@@ -619,6 +624,7 @@ async function loadAuditLogsTable() {
       `;
       tbody.appendChild(tr);
     });
+    lucide.createIcons();
   } catch (err) {
     console.error('Logs fetch failed:', err);
   }
@@ -930,8 +936,8 @@ async function loadUsersTables() {
           <td><span class="status-badge pending">Pending Approval</span></td>
           <td class="actions-col" style="text-align: center;">
             <div class="action-btn-group" style="justify-content: center;">
-              <button class="btn btn-success btn-sm" onclick="approveUser(${user.id})" style="padding: 4px 10px; font-size: 11px;"><i class="fa-solid fa-check"></i> Approve</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteUser(${user.id})" style="padding: 4px 10px; font-size: 11px;"><i class="fa-solid fa-times"></i> Reject</button>
+              <button class="btn btn-success btn-sm" onclick="approveUser(${user.id})" style="padding: 4px 10px; font-size: 11px;"><i data-lucide="check"></i> Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteUser(${user.id})" style="padding: 4px 10px; font-size: 11px;"><i data-lucide="x"></i> Reject</button>
             </div>
           </td>
         `;
@@ -962,12 +968,14 @@ async function loadUsersTables() {
         <td><span class="status-badge approved">Approved</span></td>
         <td class="actions-col" style="text-align: center;">
           ${isSelf ? '<span class="text-xs text-muted">Active Session</span>' : `
-            <button class="btn btn-outline btn-sm text-red" onclick="deleteUser(${user.id})" style="padding: 4px 10px; font-size: 11px; border-color: rgba(239, 68, 68, 0.2);"><i class="fa-solid fa-trash-can"></i> Delete</button>
+            <button class="btn btn-outline btn-sm text-red" onclick="deleteUser(${user.id})" style="padding: 4px 10px; font-size: 11px; border-color: rgba(239, 68, 68, 0.2);"><i data-lucide="trash-2"></i> Delete</button>
           `}
         </td>
       `;
       allTbody.appendChild(tr);
     });
+    
+    lucide.createIcons();
     
   } catch (err) {
     pendingTbody.innerHTML = '<tr><td colspan="4" class="text-center text-red">Failed to load users.</td></tr>';

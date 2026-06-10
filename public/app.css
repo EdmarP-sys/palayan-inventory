@@ -1166,3 +1166,29 @@ a {
   background-color: var(--color-warning-light);
   color: var(--color-warning-hover);
 }
+
+/* ================= LUCIDE ICON OVERRIDES ================= */
+svg.lucide {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2px;
+  vertical-align: middle;
+}
+
+/* Specific styling for small inline elements/buttons */
+.btn svg.lucide,
+.action-icon-btn svg.lucide {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.2px;
+}
+
+/* Spin animation for Lucide loaders */
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
