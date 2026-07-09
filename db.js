@@ -1,10 +1,52 @@
-const { createClient } = require('@libsql/client');
+const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
-const client = createClient({
-  url: process.env.TURSO_DATABASE_URL || 'file:inventory.db',
-  authToken: process.env.TURSO_AUTH_TOKEN
-});
+// Safe custom environment variable loader (replaces dotenv dependency)
+try {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    envContent.split(/\r?\n/).forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      const index = trimmed.indexOf('=');
+      if (index > 0) {
+        const key = trimmed.substring(0, index).trim();
+        const value = trimmed.substring(index + 1).trim().replace(/^["']|["']$/g, '');
+        if (key && process.env[key] === undefined) {
+          process.env[key] = value;
+        }
+      }
+    });
+  }
+} catch (e) {
+  console.warn('Error loading local .env file:', e.message);
+}
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+const supabaseSchema = process.env.NEXT_PUBLIC_SUPABASE_SCHEMA || 'traffic';
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.warn("Warning: Supabase environment variables are not set in the environment!");
+}
+
+const supabase = createClient(
+  supabaseUrl || 'https://placeholder.supabase.co', 
+  supabaseAnonKey || 'placeholder', 
+  {
+    db: {
+      schema: supabaseSchema
+    },
+    global: {
+      headers: {
+        'ngrok-skip-browser-warning': 'true'
+      }
+    }
+  }
+);
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -26,95 +68,44 @@ function verifyPassword(password, storedPassword) {
 }
 
 async function initDb() {
-  // Create tables
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sheet_name TEXT,
-      article TEXT,
-      description TEXT,
-      property_number TEXT,
-      quantity INTEGER,
-      unit TEXT,
-      unit_value REAL,
-      total_value REAL,
-      date_acquired TEXT,
-      remarks TEXT,
-      accountable_officer TEXT,
-      status TEXT,
-      raw_row TEXT
-    )
-  `);
-
-  await client.execute(`CREATE INDEX IF NOT EXISTS idx_sheet_name ON items(sheet_name)`);
-  await client.execute(`CREATE INDEX IF NOT EXISTS idx_property_number ON items(property_number)`);
-  await client.execute(`CREATE INDEX IF NOT EXISTS idx_status ON items(status)`);
-  await client.execute(`CREATE INDEX IF NOT EXISTS idx_accountable ON items(accountable_officer)`);
-
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE,
-      password_hash TEXT,
-      role TEXT,
-      status TEXT DEFAULT 'approved'
-    )
-  `);
-
-  // Migration for existing tables: add status column if it doesn't exist
+  console.log('Verifying default database seed in Supabase...');
   try {
-    await client.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'approved'");
-    console.log("Migration: Added status column to users table.");
-  } catch (err) {
-    // Ignore duplicate column name error
-    if (!err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
-      console.log("Migration note (status column):", err.message);
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id')
+      .limit(1);
+    
+    if (error) {
+      console.error('Error accessing users table in Supabase:', error.message);
+      return;
     }
-  }
-
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS audit_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT,
-      action TEXT,
-      timestamp TEXT,
-      details TEXT
-    )
-  `);
-
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      sid TEXT PRIMARY KEY,
-      sess TEXT,
-      expire INTEGER
-    )
-  `);
-  await client.execute(`CREATE INDEX IF NOT EXISTS idx_sessions_expire ON sessions(expire)`);
-
-  // Seed default users if they don't exist
-  const checkRes = await client.execute("SELECT count(*) as count FROM users");
-  const count = checkRes.rows[0].count;
-  
-  if (count === 0) {
-    const usersToSeed = [
-      { username: 'admin', password: 'adminpassword', role: 'admin', status: 'approved' },
-      { username: 'employee', password: 'employeepassword', role: 'employee', status: 'approved' }
-    ];
     
-    const seedQueries = usersToSeed.map(user => ({
-      sql: "INSERT INTO users (username, password_hash, role, status) VALUES (?, ?, ?, ?)",
-      args: [user.username, hashPassword(user.password), user.role, user.status]
-    }));
-    
-    await client.batch(seedQueries, 'write');
-    console.log('Seeded default users.');
-  } else {
-    console.log('Users already exist in database, skipping seeding.');
+    if (!users || users.length === 0) {
+      console.log('No users found in database. Seeding default users...');
+      const usersToSeed = [
+        { username: 'admin', password_hash: hashPassword('adminpassword'), role: 'admin', status: 'approved' },
+        { username: 'employee', password_hash: hashPassword('employeepassword'), role: 'employee', status: 'approved' }
+      ];
+      
+      const { error: insertError } = await supabase
+        .from('users')
+        .insert(usersToSeed);
+      
+      if (insertError) {
+        console.error('Failed to seed default users:', insertError.message);
+      } else {
+        console.log('Seeded default users successfully.');
+      }
+    } else {
+      console.log('Users already exist in database, skipping seeding.');
+    }
+  } catch (err) {
+    console.error('Database initialization hook error:', err.message);
   }
 }
 
 module.exports = {
-  client,
+  supabase,
   initDb,
   hashPassword,
   verifyPassword

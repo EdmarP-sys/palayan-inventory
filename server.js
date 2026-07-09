@@ -4,42 +4,29 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const xlsx = require('xlsx');
-const { client, hashPassword, verifyPassword, initDb } = require('./db');
+const { supabase, hashPassword, verifyPassword, initDb } = require('./db');
 const { importExcel } = require('./importer');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
-// LibSQL DB helpers mapping
-const dbAll = async (sql, params = []) => {
-  const res = await client.execute({ sql, args: params });
-  return res.rows;
-};
-
-const dbGet = async (sql, params = []) => {
-  const res = await client.execute({ sql, args: params });
-  return res.rows[0];
-};
-
-const dbRun = async (sql, params = []) => {
-  const res = await client.execute({ sql, args: params });
-  return { 
-    lastID: res.lastInsertRowid !== undefined ? Number(res.lastInsertRowid) : null, 
-    changes: res.rowsAffected 
-  };
-};
-
-// Custom LibSQL Session Store
-class LibSQLStore extends session.Store {
+// Custom Supabase Session Store
+class SupabaseStore extends session.Store {
   constructor(options) {
     super(options);
   }
   
   async get(sid, callback) {
     try {
-      const row = await dbGet("SELECT sess FROM sessions WHERE sid = ? AND expire > ?", [sid, Math.floor(Date.now() / 1000)]);
-      if (!row) return callback(null, null);
-      callback(null, JSON.parse(row.sess));
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('sess')
+        .eq('sid', sid)
+        .gt('expire', Math.floor(Date.now() / 1000))
+        .maybeSingle();
+      if (error) return callback(error);
+      if (!data) return callback(null, null);
+      callback(null, JSON.parse(data.sess));
     } catch (err) {
       callback(err);
     }
@@ -50,10 +37,10 @@ class LibSQLStore extends session.Store {
       const maxAge = sessionData.cookie && sessionData.cookie.maxAge ? sessionData.cookie.maxAge : 1000 * 60 * 60 * 24 * 2;
       const expire = Math.floor((Date.now() + maxAge) / 1000);
       const sessStr = JSON.stringify(sessionData);
-      await dbRun(
-        "INSERT INTO sessions (sid, sess, expire) VALUES (?, ?, ?) ON CONFLICT(sid) DO UPDATE SET sess = excluded.sess, expire = excluded.expire",
-        [sid, sessStr, expire]
-      );
+      const { error } = await supabase
+        .from('sessions')
+        .upsert({ sid, sess: sessStr, expire });
+      if (error) return callback(error);
       callback(null);
     } catch (err) {
       callback(err);
@@ -62,7 +49,11 @@ class LibSQLStore extends session.Store {
   
   async destroy(sid, callback) {
     try {
-      await dbRun("DELETE FROM sessions WHERE sid = ?", [sid]);
+      const { error } = await supabase
+        .from('sessions')
+        .delete()
+        .eq('sid', sid);
+      if (error) return callback(error);
       callback(null);
     } catch (err) {
       callback(err);
@@ -94,7 +85,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Configure session using database store
 app.use(session({
-  store: new LibSQLStore(),
+  store: new SupabaseStore(),
   secret: 'palayan-city-secret-key-2025',
   resave: false,
   saveUninitialized: false,
@@ -111,7 +102,7 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api')) {
     if (!dbInitPromise) {
       dbInitPromise = initDb().then(() => {
-        console.log('Database schema successfully initialized/migrated.');
+        console.log('Database connection and seed successfully verified.');
       }).catch(err => {
         console.error('Database initialization failed:', err);
         dbInitPromise = null; // Reset to retry on next request
@@ -123,8 +114,6 @@ app.use((req, res, next) => {
     next();
   }
 });
-
-// Database helpers declared at top of file
 
 // Middleware to protect routes and verify login
 const requireLogin = (req, res, next) => {
@@ -152,10 +141,9 @@ const requireRole = (allowedRoles) => {
 async function logAction(username, action, details) {
   const timestamp = new Date().toISOString();
   try {
-    await dbRun(
-      "INSERT INTO audit_logs (username, action, timestamp, details) VALUES (?, ?, ?, ?)",
-      [username, action, timestamp, details]
-    );
+    await supabase
+      .from('audit_logs')
+      .insert({ username, action, timestamp, details });
   } catch (err) {
     console.error('Audit log failed:', err.message);
   }
@@ -170,7 +158,13 @@ app.post('/api/login', async (req, res) => {
   }
   
   try {
-    const user = await dbGet("SELECT * FROM users WHERE username = ?", [username]);
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .maybeSingle();
+      
+    if (error) throw error;
     if (!user) {
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
@@ -219,15 +213,24 @@ app.post('/api/register', async (req, res) => {
   
   try {
     // Check if username is taken (case-insensitive)
-    const existing = await dbGet("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", [trimmedUser]);
+    const { data: existing, error: checkErr } = await supabase
+      .from('users')
+      .select('id')
+      .ilike('username', trimmedUser)
+      .maybeSingle();
+      
+    if (checkErr) throw checkErr;
     if (existing) {
       return res.status(400).json({ error: 'Username is already taken.' });
     }
     
     // Insert pending employee account
     const pHash = hashPassword(trimmedPass);
-    const sql = "INSERT INTO users (username, password_hash, role, status) VALUES (?, ?, 'employee', 'pending')";
-    await dbRun(sql, [trimmedUser, pHash]);
+    const { error: insertErr } = await supabase
+      .from('users')
+      .insert({ username: trimmedUser, password_hash: pHash, role: 'employee', status: 'pending' });
+      
+    if (insertErr) throw insertErr;
     
     // Log the registration attempt
     await logAction('system', 'REGISTER', `New user registration request: '${trimmedUser}' (pending approval)`);
@@ -258,8 +261,13 @@ app.get('/api/me', (req, res) => {
 // GET ALL USERS (admin only)
 app.get('/api/admin/users', requireRole(['admin']), async (req, res) => {
   try {
-    const users = await dbAll("SELECT id, username, role, status FROM users ORDER BY username ASC");
-    res.json({ users });
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id, username, role, status')
+      .order('username', { ascending: true });
+      
+    if (error) throw error;
+    res.json({ users: users || [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -270,12 +278,23 @@ app.post('/api/admin/users/:id/approve', requireRole(['admin']), async (req, res
   const targetId = req.params.id;
   
   try {
-    const user = await dbGet("SELECT * FROM users WHERE id = ?", [targetId]);
+    const { data: user, error: getErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', targetId)
+      .maybeSingle();
+      
+    if (getErr) throw getErr;
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
     
-    await dbRun("UPDATE users SET status = 'approved' WHERE id = ?", [targetId]);
+    const { error: updateErr } = await supabase
+      .from('users')
+      .update({ status: 'approved' })
+      .eq('id', targetId);
+      
+    if (updateErr) throw updateErr;
     
     await logAction(
       req.session.user.username,
@@ -294,7 +313,13 @@ app.delete('/api/admin/users/:id', requireRole(['admin']), async (req, res) => {
   const targetId = req.params.id;
   
   try {
-    const user = await dbGet("SELECT * FROM users WHERE id = ?", [targetId]);
+    const { data: user, error: getErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', targetId)
+      .maybeSingle();
+      
+    if (getErr) throw getErr;
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
@@ -304,7 +329,12 @@ app.delete('/api/admin/users/:id', requireRole(['admin']), async (req, res) => {
       return res.status(400).json({ error: 'You cannot delete your own account.' });
     }
     
-    await dbRun("DELETE FROM users WHERE id = ?", [targetId]);
+    const { error: deleteErr } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', targetId);
+      
+    if (deleteErr) throw deleteErr;
     
     await logAction(
       req.session.user.username,
@@ -328,7 +358,13 @@ app.post('/api/admin/users/:id/role', requireRole(['admin']), async (req, res) =
   }
   
   try {
-    const user = await dbGet("SELECT * FROM users WHERE id = ?", [targetId]);
+    const { data: user, error: getErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', targetId)
+      .maybeSingle();
+      
+    if (getErr) throw getErr;
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
@@ -338,7 +374,12 @@ app.post('/api/admin/users/:id/role', requireRole(['admin']), async (req, res) =
       return res.status(400).json({ error: 'You cannot demote yourself from the admin role.' });
     }
     
-    await dbRun("UPDATE users SET role = ? WHERE id = ?", [role, targetId]);
+    const { error: updateErr } = await supabase
+      .from('users')
+      .update({ role })
+      .eq('id', targetId);
+      
+    if (updateErr) throw updateErr;
     
     await logAction(
       req.session.user.username,
@@ -357,27 +398,60 @@ app.post('/api/admin/users/:id/role', requireRole(['admin']), async (req, res) =
 
 app.get('/api/dashboard', requireLogin, async (req, res) => {
   try {
-    // 1. Total items count & valuation
-    const summary = await dbGet("SELECT count(*) as count, sum(total_value) as val FROM items");
+    // Read all items to compute valuations, status breakdowns, and department breakdowns
+    const { data: items, error: itemsErr } = await supabase
+      .from('items')
+      .select('total_value, status, sheet_name');
+      
+    if (itemsErr) throw itemsErr;
     
-    // 2. Status Breakdown
-    const statusBreakdown = await dbAll("SELECT status, count(*) as count, sum(total_value) as val FROM items GROUP BY status");
+    const totalItems = items ? items.length : 0;
+    const totalValuation = items ? items.reduce((sum, item) => sum + (item.total_value || 0), 0) : 0;
     
-    // 3. Top 10 Departments by Valuation
-    const departmentBreakdown = await dbAll(
-      "SELECT sheet_name, count(*) as count, sum(total_value) as val FROM items GROUP BY sheet_name ORDER BY val DESC LIMIT 10"
-    );
+    // Status breakdown
+    const statusMap = {};
+    (items || []).forEach(item => {
+      const status = item.status || 'Active';
+      if (!statusMap[status]) {
+        statusMap[status] = { status, count: 0, val: 0 };
+      }
+      statusMap[status].count += 1;
+      statusMap[status].val += (item.total_value || 0);
+    });
+    const statusBreakdown = Object.values(statusMap);
     
-    // 4. Recent Logs (For Admin view)
+    // Department breakdown
+    const deptMap = {};
+    (items || []).forEach(item => {
+      const dept = item.sheet_name;
+      if (!dept) return;
+      if (!deptMap[dept]) {
+        deptMap[dept] = { sheet_name: dept, count: 0, val: 0 };
+      }
+      deptMap[dept].count += 1;
+      deptMap[dept].val += (item.total_value || 0);
+    });
+    const departmentBreakdown = Object.values(deptMap)
+      .sort((a, b) => b.val - a.val)
+      .slice(0, 10);
+      
+    // Recent logs (For Admin view)
     let auditLogs = [];
     if (req.session.user.role === 'admin') {
-      auditLogs = await dbAll("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 20");
+      const { data: logs, error: logsErr } = await supabase
+        .from('audit_logs')
+        .select('*')
+        .order('timestamp', { ascending: false })
+        .limit(20);
+        
+      if (logsErr) throw logsErr;
+      auditLogs = logs || [];
     }
     
     res.json({
       summary: {
-        totalItems: summary.count || 0,
-        totalValuation: summary.val || 0
+        totalItems,
+        totalValuation
       },
       statusBreakdown,
       departmentBreakdown,
@@ -390,8 +464,14 @@ app.get('/api/dashboard', requireLogin, async (req, res) => {
 
 app.get('/api/departments', requireLogin, async (req, res) => {
   try {
-    const rows = await dbAll("SELECT DISTINCT sheet_name FROM items ORDER BY sheet_name ASC");
-    res.json({ departments: rows.map(r => r.sheet_name) });
+    const { data, error } = await supabase
+      .from('items')
+      .select('sheet_name');
+      
+    if (error) throw error;
+    
+    const uniqueDepts = Array.from(new Set((data || []).map(r => r.sheet_name).filter(Boolean))).sort();
+    res.json({ departments: uniqueDepts });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -417,50 +497,50 @@ app.get('/api/inventory', requireLogin, async (req, res) => {
     return res.status(400).json({ error: 'Invalid sort column.' });
   }
   
-  const sortDir = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-  
-  // Build query
-  let sqlConditions = [];
-  let sqlParams = [];
-  
-  if (search) {
-    sqlConditions.push("(article LIKE ? OR description LIKE ? OR property_number LIKE ? OR accountable_officer LIKE ? OR remarks LIKE ?)");
-    const searchTerm = `%${search}%`;
-    sqlParams.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
-  }
-  if (department) {
-    sqlConditions.push("sheet_name = ?");
-    sqlParams.push(department);
-  }
-  if (status) {
-    sqlConditions.push("status = ?");
-    sqlParams.push(status);
-  }
-  
-  const whereClause = sqlConditions.length > 0 ? "WHERE " + sqlConditions.join(" AND ") : "";
-  
   try {
-    // Get total count for pagination
-    const countSql = `SELECT count(*) as count FROM items ${whereClause}`;
-    const countResult = await dbGet(countSql, sqlParams);
-    const totalItems = countResult.count;
+    // 1. Get exact total count of matching rows
+    let countQuery = supabase.from('items').select('*', { count: 'exact', head: true });
     
-    // Get items
-    const querySql = `
-      SELECT * FROM items 
-      ${whereClause} 
-      ORDER BY ${sortBy} ${sortDir} 
-      LIMIT ? OFFSET ?
-    `;
-    const items = await dbAll(querySql, [...sqlParams, limit, offset]);
+    if (search) {
+      countQuery = countQuery.or(`article.ilike.%${search}%,description.ilike.%${search}%,property_number.ilike.%${search}%,accountable_officer.ilike.%${search}%,remarks.ilike.%${search}%`);
+    }
+    if (department) {
+      countQuery = countQuery.eq('sheet_name', department);
+    }
+    if (status) {
+      countQuery = countQuery.eq('status', status);
+    }
+    
+    const { count: totalItems, error: countErr } = await countQuery;
+    if (countErr) throw countErr;
+    
+    // 2. Fetch the actual items
+    let itemsQuery = supabase.from('items').select('*');
+    
+    if (search) {
+      itemsQuery = itemsQuery.or(`article.ilike.%${search}%,description.ilike.%${search}%,property_number.ilike.%${search}%,accountable_officer.ilike.%${search}%,remarks.ilike.%${search}%`);
+    }
+    if (department) {
+      itemsQuery = itemsQuery.eq('sheet_name', department);
+    }
+    if (status) {
+      itemsQuery = itemsQuery.eq('status', status);
+    }
+    
+    itemsQuery = itemsQuery
+      .order(sortBy, { ascending: sortOrder.toUpperCase() === 'ASC' })
+      .range(offset, offset + limit - 1);
+      
+    const { data: items, error: itemsErr } = await itemsQuery;
+    if (itemsErr) throw itemsErr;
     
     res.json({
-      items,
+      items: items || [],
       pagination: {
         page,
         limit,
-        totalItems,
-        totalPages: Math.ceil(totalItems / limit)
+        totalItems: totalItems || 0,
+        totalPages: Math.ceil((totalItems || 0) / limit)
       }
     });
   } catch (err) {
@@ -482,40 +562,46 @@ app.post('/api/inventory', requireRole(['employee', 'admin']), async (req, res) 
   
   try {
     // Check if property number already exists in DB
-    const existing = await dbGet("SELECT id FROM items WHERE property_number = ?", [property_number.trim()]);
+    const { data: existing, error: checkErr } = await supabase
+      .from('items')
+      .select('id')
+      .eq('property_number', property_number.trim())
+      .maybeSingle();
+      
+    if (checkErr) throw checkErr;
     if (existing) {
       return res.status(400).json({ error: `Property number '${property_number}' already exists (ID: ${existing.id}).` });
     }
     
-    const sql = `
-      INSERT INTO items (sheet_name, article, description, property_number, quantity, unit, unit_value, total_value, date_acquired, remarks, accountable_officer, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-    
-    const params = [
-      sheet_name.trim(),
-      article.trim(),
-      (description || '').trim(),
-      property_number.trim(),
-      qty,
-      unit || null,
-      uv,
-      tv,
-      (date_acquired || '').trim(),
-      (remarks || '').trim(),
-      (accountable_officer || '').trim(),
-      status || 'Active'
-    ];
-    
-    const result = await dbRun(sql, params);
+    const { data: inserted, error: insertErr } = await supabase
+      .from('items')
+      .insert({
+        sheet_name: sheet_name.trim(),
+        article: article.trim(),
+        description: (description || '').trim(),
+        property_number: property_number.trim(),
+        quantity: qty,
+        unit: unit || null,
+        unit_value: uv,
+        total_value: tv,
+        date_acquired: (date_acquired || '').trim(),
+        remarks: (remarks || '').trim(),
+        accountable_officer: (accountable_officer || '').trim(),
+        status: status || 'Active'
+      })
+      .select('id')
+      .single();
+      
+    if (insertErr) throw insertErr;
+    const newId = inserted ? inserted.id : null;
     
     await logAction(
       req.session.user.username,
       'CREATE',
-      `Created item ID ${result.lastID}: ${article} (Property Code: ${property_number})`
+      `Created item ID ${newId}: ${article} (Property Code: ${property_number})`
     );
     
-    res.status(201).json({ message: 'Item created successfully.', id: result.lastID });
+    res.status(201).json({ message: 'Item created successfully.', id: newId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -535,43 +621,49 @@ app.put('/api/inventory/:id', requireRole(['employee', 'admin']), async (req, re
   const tv = parseFloat(total_value) || (qty * uv);
   
   try {
-    // Check if item exists
-    const item = await dbGet("SELECT * FROM items WHERE id = ?", [id]);
+    const { data: item, error: getErr } = await supabase
+      .from('items')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+      
+    if (getErr) throw getErr;
     if (!item) {
       return res.status(404).json({ error: 'Item not found.' });
     }
     
     // Check if property number is taken by another item
-    const existing = await dbGet("SELECT id FROM items WHERE property_number = ? AND id != ?", [property_number.trim(), id]);
+    const { data: existing, error: checkErr } = await supabase
+      .from('items')
+      .select('id')
+      .eq('property_number', property_number.trim())
+      .neq('id', id)
+      .maybeSingle();
+      
+    if (checkErr) throw checkErr;
     if (existing) {
       return res.status(400).json({ error: `Property number '${property_number}' is already taken by item ID: ${existing.id}.` });
     }
     
-    const sql = `
-      UPDATE items SET 
-        sheet_name = ?, article = ?, description = ?, property_number = ?, 
-        quantity = ?, unit = ?, unit_value = ?, total_value = ?, 
-        date_acquired = ?, remarks = ?, accountable_officer = ?, status = ?
-      WHERE id = ?
-    `;
-    
-    const params = [
-      sheet_name.trim(),
-      article.trim(),
-      (description || '').trim(),
-      property_number.trim(),
-      qty,
-      unit || null,
-      uv,
-      tv,
-      (date_acquired || '').trim(),
-      (remarks || '').trim(),
-      (accountable_officer || '').trim(),
-      status || 'Active',
-      id
-    ];
-    
-    await dbRun(sql, params);
+    const { error: updateErr } = await supabase
+      .from('items')
+      .update({
+        sheet_name: sheet_name.trim(),
+        article: article.trim(),
+        description: (description || '').trim(),
+        property_number: property_number.trim(),
+        quantity: qty,
+        unit: unit || null,
+        unit_value: uv,
+        total_value: tv,
+        date_acquired: (date_acquired || '').trim(),
+        remarks: (remarks || '').trim(),
+        accountable_officer: (accountable_officer || '').trim(),
+        status: status || 'Active'
+      })
+      .eq('id', id);
+      
+    if (updateErr) throw updateErr;
     
     await logAction(
       req.session.user.username,
@@ -590,12 +682,23 @@ app.delete('/api/inventory/:id', requireRole(['employee', 'admin']), async (req,
   const id = req.params.id;
   
   try {
-    const item = await dbGet("SELECT * FROM items WHERE id = ?", [id]);
+    const { data: item, error: getErr } = await supabase
+      .from('items')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+      
+    if (getErr) throw getErr;
     if (!item) {
       return res.status(404).json({ error: 'Item not found.' });
     }
     
-    await dbRun("DELETE FROM items WHERE id = ?", [id]);
+    const { error: deleteErr } = await supabase
+      .from('items')
+      .delete()
+      .eq('id', id);
+      
+    if (deleteErr) throw deleteErr;
     
     await logAction(
       req.session.user.username,
@@ -617,12 +720,17 @@ app.get('/api/export', requireRole(['employee', 'admin']), async (req, res) => {
   try {
     console.log('Building Excel workbook export...');
     
-    // Read all items
-    const items = await dbAll("SELECT * FROM items ORDER BY sheet_name ASC, id ASC");
+    const { data: items, error } = await supabase
+      .from('items')
+      .select('*')
+      .order('sheet_name', { ascending: true })
+      .order('id', { ascending: true });
+      
+    if (error) throw error;
     
     // Group items by sheet_name
     const sheetsData = {};
-    items.forEach(item => {
+    (items || []).forEach(item => {
       if (!sheetsData[item.sheet_name]) {
         sheetsData[item.sheet_name] = [];
       }
@@ -693,8 +801,13 @@ app.post('/api/import', requireRole(['admin']), upload.single('excelFile'), asyn
 // GET AUDIT LOGS (admin only)
 app.get('/api/audit-logs', requireRole(['admin']), async (req, res) => {
   try {
-    const logs = await dbAll("SELECT * FROM audit_logs ORDER BY timestamp DESC");
-    res.json({ logs });
+    const { data: logs, error } = await supabase
+      .from('audit_logs')
+      .select('*')
+      .order('timestamp', { ascending: false });
+      
+    if (error) throw error;
+    res.json({ logs: logs || [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1,7 +1,7 @@
 const xlsx = require('xlsx');
 const path = require('path');
 const fs = require('fs');
-const { client, initDb } = require('./db');
+const { supabase, initDb } = require('./db');
 
 const defaultExcelPath = 'C:\\pineda\\Inventory 2025.xlsx';
 
@@ -70,7 +70,7 @@ async function importExcel(excelFilePath, username = 'system') {
     console.log(`Loaded ${sheetNames.length} sheets from workbook.`);
     
     // Clear items table
-    await client.execute("DELETE FROM items");
+    await supabase.from('items').delete().neq('id', 0);
     
     let itemsToInsert = [];
     let currentItem = null;
@@ -268,45 +268,24 @@ async function importExcel(excelFilePath, username = 'system') {
       console.log(`Sheet '${sheetName}' parsed: ${sheetImported} items queued.`);
     }
     
-    // Prepare batch insert statements
-    const insertQueries = itemsToInsert.map(item => ({
-      sql: `
-        INSERT INTO items (
-          sheet_name, article, description, property_number, quantity, unit,
-          unit_value, total_value, date_acquired, remarks, accountable_officer, status, raw_row
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      args: [
-        item.sheet_name,
-        item.article,
-        item.description,
-        item.property_number,
-        item.quantity,
-        item.unit,
-        item.unit_value,
-        item.total_value,
-        item.date_acquired,
-        item.remarks,
-        item.accountable_officer,
-        item.status,
-        item.raw_row
-      ]
-    }));
-    
     // Execute inserts in batches of 500
     const chunkSize = 500;
-    console.log(`Importing ${insertQueries.length} total items in chunks of ${chunkSize}...`);
-    for (let i = 0; i < insertQueries.length; i += chunkSize) {
-      const chunk = insertQueries.slice(i, i + chunkSize);
-      await client.batch(chunk, 'write');
+    console.log(`Importing ${itemsToInsert.length} total items in chunks of ${chunkSize}...`);
+    for (let i = 0; i < itemsToInsert.length; i += chunkSize) {
+      const chunk = itemsToInsert.slice(i, i + chunkSize);
+      const { error: insertError } = await supabase.from('items').insert(chunk);
+      if (insertError) throw insertError;
     }
     
     // Log audit trail
     const timestamp = new Date().toISOString();
-    await client.execute({
-      sql: "INSERT INTO audit_logs (username, action, timestamp, details) VALUES (?, ?, ?, ?)",
-      args: [username, 'IMPORT', timestamp, `Imported ${itemsToInsert.length} items from Excel sheet: ${path.basename(excelFilePath)}`]
+    const { error: logError } = await supabase.from('audit_logs').insert({
+      username,
+      action: 'IMPORT',
+      timestamp,
+      details: `Imported ${itemsToInsert.length} items from Excel sheet: ${path.basename(excelFilePath)}`
     });
+    if (logError) throw logError;
     
     return itemsToInsert.length;
   } catch (err) {

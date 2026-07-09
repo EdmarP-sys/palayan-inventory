@@ -1,0 +1,13 @@
+# Supabase configuration for local development
+
+project_id = "palayan-inventory"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "traffic"]
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
